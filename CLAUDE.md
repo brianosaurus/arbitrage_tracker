@@ -1,5 +1,11 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+Arbitrage tracker — early stage, no source code yet. Update this section as the project takes shape (language, framework, build/test/lint commands, architecture).
+
 ## Workflow Orchestration
 
 1. Plan Mode Default
