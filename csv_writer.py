@@ -44,6 +44,10 @@ class CsvWriter:
         first_leg = legs[0]
         last_leg = legs[-1]
 
+        # Skip rows with missing pool addresses
+        if not first_leg.pool_address or not last_leg.pool_address:
+            return
+
         # Human-readable amount from first leg
         if first_leg.amount_in and first_leg.decimals_in:
             amount = first_leg.amount_in / (10 ** first_leg.decimals_in)

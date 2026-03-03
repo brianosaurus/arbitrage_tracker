@@ -56,14 +56,14 @@ class TransactionAnalyzer:
 
         # Extract signature
         try:
-            sig_bytes = transaction_data.transaction.signature
+            sig_bytes = transaction_data.signature
             signature = base58.b58encode(sig_bytes).decode('utf-8')
         except Exception:
             return None
 
         # Skip failed transactions
         meta = transaction_data.meta
-        if meta.err and len(meta.err) > 0:
+        if meta.HasField('err'):
             return None
 
         # Extract signer
