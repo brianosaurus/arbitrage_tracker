@@ -4,7 +4,55 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Arbitrage tracker — early stage, no source code yet. Update this section as the project takes shape (language, framework, build/test/lint commands, architecture).
+Solana arbitrage tracker — read-only, post-hoc analysis of on-chain arbitrage transactions. Pure Python 3, no compilation step.
+
+**Stack:** Python 3 · gRPC (Geyser) · Protocol Buffers · SQLite (WAL mode) · asyncio
+
+## Commands
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Real-time block following
+python tracker.py --follow
+
+# Historical slot range scan
+python tracker.py --slot-range 300000000-300001000
+
+# Filter by wallet
+python tracker.py --follow --signer <ADDRESS>
+
+# Debug logging
+python tracker.py --follow --verbose
+
+# Regenerate protobuf stubs (if .proto files change)
+# geyser_pb2.py, geyser_pb2_grpc.py, solana_storage_pb2.py, solana_storage_pb2_grpc.py
+python -m grpc_tools.protoc ...
+```
+
+No test suite yet. No linter configured.
+
+## Architecture
+
+**Data flow:** gRPC block stream → transaction filtering → swap detection → arbitrage classification → SQLite storage + console display
+
+Key modules:
+- **tracker.py** — CLI entry point. `--follow` (real-time) or `--slot-range` (historical). Handles Ctrl+C gracefully, prints stats on exit.
+- **block_fetcher.py** — gRPC streaming via Geyser. `follow_confirmed()` for real-time, `fetch_slot_range()` for history. Auto-reconnect with exponential backoff.
+- **transaction_analyzer.py** — Core arbitrage detection. Extracts swap sequences, checks circular token flows, computes net profit/loss. Key dataclasses: `SwapLeg`, `ArbitrageTransaction`.
+- **swap_detector.py** — Identifies swaps across 10+ DEX protocols (Raydium, Orca, Meteora, PumpSwap, Jupiter, Phoenix, OpenBook, Serum). Uses instruction discriminators (first 8 bytes) for protocol identification.
+- **db.py** — SQLite layer. Tables: `arbitrage_transactions`, `swap_legs`, `scan_progress`. Supports resumable scans.
+- **constants.py** — DEX program IDs, token mints, known bot wallets (170+), Jito tip accounts, swap discriminators.
+- **config.py** — Loads `.env` via python-dotenv. Requires `GRPC_ENDPOINT` and `GRPC_TOKEN`.
+- **grpc_utils.py** — Helpers for signer extraction, address parsing, bot filtering, Jito detection.
+- **display.py** — Console formatting with Solscan links.
+
+**Key design decisions:**
+- Read-only: no signing, no transaction execution
+- gRPC streaming over HTTP polling for real-time data
+- Token-agnostic circular flow detection (not just stablecoins)
+- Protobuf stubs are checked in (generated files: `*_pb2.py`, `*_pb2_grpc.py`)
 
 ## Workflow Orchestration
 

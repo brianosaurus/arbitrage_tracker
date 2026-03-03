@@ -11,7 +11,7 @@ from typing import List, Dict, Optional
 
 from swap_detector import SwapDetector
 from grpc_utils import extract_signer, extract_addresses, contains_jito_tip_account
-from constants import JUPITER_PROGRAMS, SOL_MINT, WELL_KNOWN_TOKENS
+from constants import JUPITER_PROGRAMS, SOL_MINT, WELL_KNOWN_TOKENS, JITO_TIP_ACCOUNTS
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,9 @@ class ArbitrageTransaction:
     is_profitable: bool = False
     uses_jupiter: bool = False
     has_jito_tip: bool = False
+    jito_tip_amount: float = 0.0  # SOL amount tipped to Jito
+    is_backrun: bool = False
+    tx_index: int = 0  # position within the block
     num_swaps: int = 0
 
 
@@ -47,7 +50,7 @@ class TransactionAnalyzer:
         self.detector = SwapDetector()
         self.min_swaps = min_swaps
 
-    def analyze(self, transaction_data, slot: int, block_time: int = 0) -> Optional[ArbitrageTransaction]:
+    def analyze(self, transaction_data, slot: int, block_time: int = 0, tx_index: int = 0) -> Optional[ArbitrageTransaction]:
         """Analyze a single transaction for arbitrage patterns.
         Returns ArbitrageTransaction if arb detected, None otherwise."""
 
@@ -77,6 +80,7 @@ class TransactionAnalyzer:
         addresses = extract_addresses(transaction_data, meta)
         uses_jupiter = any(addr in JUPITER_PROGRAMS for addr in addresses)
         has_jito_tip = contains_jito_tip_account(addresses)
+        jito_tip_amount = self._calculate_jito_tip(transaction_data) if has_jito_tip else 0.0
 
         # Build swap legs from detected swaps
         swap_legs = self._build_swap_legs(swaps)
@@ -102,6 +106,8 @@ class TransactionAnalyzer:
             is_profitable=is_profitable,
             uses_jupiter=uses_jupiter,
             has_jito_tip=has_jito_tip,
+            jito_tip_amount=jito_tip_amount,
+            tx_index=tx_index,
             num_swaps=len(swap_legs),
         )
 
@@ -241,3 +247,24 @@ class TransactionAnalyzer:
             if change > 0:
                 return True
         return False
+
+    def _calculate_jito_tip(self, transaction_data) -> float:
+        """Calculate total SOL tipped to Jito tip accounts."""
+        meta = transaction_data.meta
+        try:
+            account_keys = transaction_data.transaction.message.account_keys
+            loaded_writable = meta.loaded_writable_addresses if hasattr(meta, 'loaded_writable_addresses') else []
+            loaded_readonly = meta.loaded_readonly_addresses if hasattr(meta, 'loaded_readonly_addresses') else []
+            all_keys = list(account_keys) + list(loaded_writable) + list(loaded_readonly)
+
+            total_tip = 0
+            for i, key in enumerate(all_keys):
+                addr = base58.b58encode(key).decode('utf-8')
+                if addr in JITO_TIP_ACCOUNTS and i < len(meta.pre_balances) and i < len(meta.post_balances):
+                    change = meta.post_balances[i] - meta.pre_balances[i]
+                    if change > 0:
+                        total_tip += change
+
+            return total_tip / 1e9  # lamports to SOL
+        except Exception:
+            return 0.0
