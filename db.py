@@ -6,6 +6,8 @@ Tables: arbitrage_transactions, swap_legs, scan_progress
 import json
 import sqlite3
 import logging
+import threading
+import time
 from typing import Optional
 from transaction_analyzer import ArbitrageTransaction
 
@@ -59,6 +61,7 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_arb_slot ON arbitrage_transactions(slot);
             CREATE INDEX IF NOT EXISTS idx_arb_signer ON arbitrage_transactions(signer);
+            CREATE INDEX IF NOT EXISTS idx_arb_block_time ON arbitrage_transactions(block_time);
             CREATE INDEX IF NOT EXISTS idx_legs_sig ON swap_legs(signature);
         """)
         self.conn.commit()
@@ -135,5 +138,44 @@ class Database:
             'unique_signers': unique_signers,
         }
 
+    def prune_old_transactions(self, max_age_seconds: int = 7 * 24 * 3600) -> int:
+        """Delete transactions older than max_age_seconds. Returns count deleted."""
+        cutoff = int(time.time()) - max_age_seconds
+        cursor = self.conn.execute(
+            "SELECT signature FROM arbitrage_transactions WHERE block_time > 0 AND block_time < ?",
+            (cutoff,),
+        )
+        sigs = [row[0] for row in cursor.fetchall()]
+        if not sigs:
+            return 0
+
+        # Delete in batches to avoid huge transactions
+        for i in range(0, len(sigs), 500):
+            batch = sigs[i:i + 500]
+            placeholders = ','.join('?' * len(batch))
+            self.conn.execute(f"DELETE FROM swap_legs WHERE signature IN ({placeholders})", batch)
+            self.conn.execute(f"DELETE FROM arbitrage_transactions WHERE signature IN ({placeholders})", batch)
+        self.conn.commit()
+        return len(sigs)
+
+    def start_pruning_thread(self, interval_seconds: int = 3600, max_age_seconds: int = 7 * 24 * 3600):
+        """Start a daemon thread that periodically prunes old transactions."""
+        self._prune_stop = threading.Event()
+
+        def _prune_loop():
+            while not self._prune_stop.wait(interval_seconds):
+                try:
+                    deleted = self.prune_old_transactions(max_age_seconds)
+                    if deleted:
+                        logger.info(f"Pruned {deleted} transactions older than {max_age_seconds // 3600}h")
+                except Exception as e:
+                    logger.error(f"Pruning error: {e}")
+
+        t = threading.Thread(target=_prune_loop, daemon=True, name="db-pruner")
+        t.start()
+        self._prune_thread = t
+
     def close(self):
+        if hasattr(self, '_prune_stop'):
+            self._prune_stop.set()
         self.conn.close()

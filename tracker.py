@@ -20,7 +20,6 @@ from block_fetcher import BlockFetcher
 from transaction_analyzer import TransactionAnalyzer
 from swap_detector import SwapDetector
 from db import Database
-from csv_writer import CsvWriter
 from display import print_arbitrage, print_progress, print_summary
 
 logger = logging.getLogger(__name__)
@@ -40,8 +39,6 @@ def parse_args():
                         help='Minimum swaps to qualify as arbitrage (default: 2)')
     parser.add_argument('--signer', type=str, default=None,
                         help='Filter by signer wallet address')
-    parser.add_argument('--csv', type=str, default='arb_tracker.csv',
-                        help='CSV output file path (default: arb_tracker.csv)')
     parser.add_argument('--duration', type=float, default=None,
                         help='Run for this many minutes then stop')
     parser.add_argument('--verbose', action='store_true',
@@ -58,7 +55,7 @@ def _extract_tx_pools(tx, swap_detector: SwapDetector) -> set:
         return set()
 
 
-async def process_block(block, slot, analyzer, db, csv_writer, signer_filter, stats):
+async def process_block(block, slot, analyzer, db, signer_filter, stats):
     """Process all transactions in a block."""
     if not hasattr(block, 'transactions'):
         return
@@ -85,7 +82,6 @@ async def process_block(block, slot, analyzer, db, csv_writer, signer_filter, st
                 arb.is_backrun = True
 
             db.save_arbitrage(arb)
-            csv_writer.write_arb(arb)
             print_arbitrage(arb)
             stats['arbs_found'] += 1
 
@@ -102,7 +98,8 @@ async def run_follow(config: Config, args):
     fetcher = BlockFetcher(config.grpc_endpoint, config.grpc_token)
     analyzer = TransactionAnalyzer(min_swaps=args.min_swaps)
     db = Database(args.db)
-    csv_writer = CsvWriter(args.csv)
+    db.prune_old_transactions()
+    db.start_pruning_thread()
 
     stats = {'blocks': 0, 'arbs_found': 0, 'verbose': args.verbose}
     start_time = time.time()
@@ -111,7 +108,6 @@ async def run_follow(config: Config, args):
     print(f"Following confirmed blocks... (Ctrl+C to stop)")
     print(f"gRPC: {config.grpc_endpoint}")
     print(f"DB: {args.db}")
-    print(f"CSV: {args.csv}")
     print(f"Min swaps: {args.min_swaps}")
     if args.duration:
         print(f"Duration: {args.duration} minutes")
@@ -121,7 +117,7 @@ async def run_follow(config: Config, args):
 
     try:
         async for slot, block in fetcher.follow_confirmed():
-            await process_block(block, slot, analyzer, db, csv_writer, args.signer, stats)
+            await process_block(block, slot, analyzer, db, args.signer, stats)
             stats['blocks'] += 1
             if stats['blocks'] % 10 == 0:
                 print_progress(slot, stats['blocks'], stats['arbs_found'], start_time)
@@ -134,7 +130,6 @@ async def run_follow(config: Config, args):
         elapsed = time.time() - start_time
         db_stats = db.get_stats()
         print_summary(db_stats, elapsed)
-        csv_writer.close()
         db.close()
 
 
@@ -143,7 +138,8 @@ async def run_slot_range(config: Config, args, start_slot: int, end_slot: int):
     fetcher = BlockFetcher(config.grpc_endpoint, config.grpc_token)
     analyzer = TransactionAnalyzer(min_swaps=args.min_swaps)
     db = Database(args.db)
-    csv_writer = CsvWriter(args.csv)
+    db.prune_old_transactions()
+    db.start_pruning_thread()
 
     # Check for resumable scan
     last_processed = db.get_scan_progress(start_slot, end_slot)
@@ -158,14 +154,13 @@ async def run_slot_range(config: Config, args, start_slot: int, end_slot: int):
     print(f"Scanning slots {start_slot:,} to {end_slot:,}...")
     print(f"gRPC: {config.grpc_endpoint}")
     print(f"DB: {args.db}")
-    print(f"CSV: {args.csv}")
     if args.duration:
         print(f"Duration: {args.duration} minutes")
     print()
 
     try:
         async for slot, block in fetcher.fetch_slot_range(start_slot, end_slot):
-            await process_block(block, slot, analyzer, db, csv_writer, args.signer, stats)
+            await process_block(block, slot, analyzer, db, args.signer, stats)
             stats['blocks'] += 1
 
             if stats['blocks'] % 100 == 0:
@@ -186,7 +181,6 @@ async def run_slot_range(config: Config, args, start_slot: int, end_slot: int):
         elapsed = time.time() - start_time
         db_stats = db.get_stats()
         print_summary(db_stats, elapsed)
-        csv_writer.close()
         db.close()
 
 
